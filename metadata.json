@@ -1,0 +1,9 @@
+{
+  "name": "Blue Collar Klect",
+  "description": "A 35M operational intel tool for field workers to track, scan, and monitor vehicles using AI-powered vision for plate and VIN recognition.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}

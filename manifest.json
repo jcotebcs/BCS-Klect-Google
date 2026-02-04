@@ -1,0 +1,26 @@
+
+{
+  "name": "KLECT.OPS Tactical Hub",
+  "short_name": "KLECT.OPS",
+  "description": "Professional tactical asset management and field intelligence platform.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#2563eb",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://via.placeholder.com/192/0f172a/2563eb?text=K",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://via.placeholder.com/512/0f172a/2563eb?text=KLECT",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "utilities", "business"]
+}
