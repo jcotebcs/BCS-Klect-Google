@@ -13,6 +13,7 @@ import Profile from './components/Profile';
 import IntelHub from './components/IntelHub';
 import BulkApproval from './components/BulkApproval';
 import BulkUpload from './components/BulkUpload';
+import PWAInstallPrompt from './components/PWAInstallPrompt';
 import { AppView, VehicleRecord, PersonRecord, Interaction, InteractionType, User, ThemeMode } from './types';
 
 const App: React.FC = () => {
@@ -37,6 +38,14 @@ const App: React.FC = () => {
     if (savedV) setVehicles(JSON.parse(savedV));
     if (savedP) setPeople(JSON.parse(savedP));
     if (savedI) setInteractions(JSON.parse(savedI));
+    
+    // Handle deep linking from PWA shortcuts
+    const params = new URLSearchParams(window.location.search);
+    const viewParam = params.get('view');
+    if (viewParam && ['dashboard', 'scanner', 'intel', 'history', 'people'].includes(viewParam)) {
+      setActiveView(viewParam as AppView);
+    }
+
     setIsLoading(false);
   }, []);
 
@@ -141,6 +150,7 @@ const App: React.FC = () => {
 
   return (
     <div className="h-screen w-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 flex flex-col overflow-hidden select-none transition-colors duration-300">
+      <PWAInstallPrompt />
       <main className="flex-1 overflow-y-auto no-scrollbar relative">
         {renderView()}
       </main>

@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -87,14 +88,12 @@
 <body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-300 overflow-hidden">
   <div id="root"></div>
   <script>
-    if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
+    if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        // Use relative path for local SW registration
-        const swUrl = './sw.js';
-        navigator.serviceWorker.register(swUrl).then(reg => {
-          console.log('KLECT-OPS Service Worker registered:', reg.scope);
+        navigator.serviceWorker.register('./sw.js').then(reg => {
+          console.log('[PWA] Service Worker Registered:', reg.scope);
         }).catch(err => {
-          console.warn('Service Worker registration skipped due to origin policy:', err.message);
+          console.warn('[PWA] Service Worker Failed:', err);
         });
       });
     }
