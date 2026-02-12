@@ -1,6 +1,9 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { VehicleCategory, InteractionType, DocumentInfo } from "../types";
+import { VehicleCategory, InteractionType, DocumentInfo, LogoReference, NeuralSample } from "../types";
+import { getNeuralSamples, EnhancedNeuralSample } from "./trainingService";
+import { NORTH_AMERICAN_ARCHIVES } from "./manufacturerData";
+import { OPERATIONAL_KNOWLEDGE_BUCKET } from "./knowledgeBucket";
 
 export interface ScanResult {
   plate: string;
@@ -8,32 +11,42 @@ export interface ScanResult {
   year: string;
   make: string;
   model: string;
+  trimLevel: string;
   brand: string;
   shape: string;
   wheelSignature: string;
   bodyModifications: string[];
   logoDetected: boolean;
   logoText: string;
+  logoConfidence: number;
   color: string;
   category: VehicleCategory;
   notes: string;
   confidence: number;
   documents: DocumentInfo[];
+  historicalMatch?: boolean;
+  operationalChecks?: string[];
+}
+
+export interface AppraisalResult {
+  value: number;
+  confidence: number;
+  sources: { title: string; uri: string }[];
+  reasoning: string;
 }
 
 export interface PersonScanResult {
   name: string;
-  ssnHint: string;
   biometrics: {
-    height: string;
-    hair: string;
-    eyes: string;
-    marks: string[];
-    facialSignature: string;
+    height?: string;
+    hair?: string;
+    eyes?: string;
+    distinguishingMarks?: string[];
+    facialSignature?: string;
   };
   notes: string;
   suggestedInteraction: InteractionType;
-  documents: DocumentInfo[];
+  documents?: DocumentInfo[];
 }
 
 export interface IntelResult {
@@ -41,84 +54,96 @@ export interface IntelResult {
   sources: { title: string; uri: string }[];
 }
 
-export interface DetectionInfo {
-  type: 'plate' | 'vin' | 'none';
-  confidence: number;
-}
+// REPAIR: Added timestamp to return type to satisfy VehicleRecord interface
+export async function checkStolenStatus(vin: string): Promise<{ isStolen: boolean, details: string, timestamp: string, sources: { title: string, uri: string }[] }> {
+  if (!vin || vin === 'Unknown' || vin === 'Not Scanned') {
+    return { isStolen: false, details: "Invalid VIN for theft check", timestamp: new Date().toISOString(), sources: [] };
+  }
 
-export async function detectTargetType(base64Image: string): Promise<DetectionInfo> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = "Analyze this image for tactical automotive targets. Classify if the primary object is a 'vin' (barcode, sticker, or stamped metal label) or a 'plate' (license plate). Return 'none' if neither is clearly the focus. Also provide a confidence score between 0.0 and 1.0.";
+  const prompt = `Perform a high-security tactical check on the VIN "${vin}". 
+    Target NICB (nicb.org), CPIC (cpic-cipc.ca), and regional stolen vehicle databases. 
+    Determine if this vehicle is currently reported as stolen, salvage, or total loss.
+    Return JSON format.`;
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: [{ parts: [{ inlineData: { mimeType: 'image/jpeg', data: base64Image } }, { text: prompt }] }],
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
       config: {
-        thinkingConfig: { thinkingBudget: 0 },
-        responseMimeType: 'application/json',
+        tools: [{ googleSearch: {} }],
+        responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            type: { type: Type.STRING, description: "One of: 'vin', 'plate', 'none'" },
-            confidence: { type: Type.NUMBER, description: "Confidence score from 0.0 to 1.0" }
+            isStolen: { type: Type.BOOLEAN, description: "True if flagged as stolen in any database" },
+            details: { type: Type.STRING, description: "Summary of findings and specific database status" }
           },
-          required: ["type", "confidence"]
+          required: ["isStolen", "details"]
         }
       }
     });
-    
-    const result = JSON.parse(response.text || '{}');
-    const type = (result.type || 'none').toLowerCase();
-    
+
+    const res = JSON.parse(response.text || '{}');
+    const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
+      ?.map((chunk: any) => ({
+        title: chunk.web?.title || 'Security Source',
+        uri: chunk.web?.uri || ''
+      }))
+      .filter((s: any) => s.uri) || [];
+
     return {
-      type: (type === 'vin' || type === 'plate') ? type : 'none',
-      confidence: result.confidence || 0
+      isStolen: !!res.isStolen,
+      details: res.details || "No record found.",
+      // REPAIR: Added real-time timestamp
+      timestamp: new Date().toISOString(),
+      sources
     };
   } catch (err) {
-    console.error("Mode detection failed", err);
-    return { type: 'none', confidence: 0 };
+    console.error("Stolen check failed:", err);
+    return { isStolen: false, details: "Operational failure during theft check", timestamp: new Date().toISOString(), sources: [] };
   }
 }
 
-export async function recognizeHandwriting(base64Image: string): Promise<string> {
+export async function analyzeVehicleImage(
+  base64Image: string, 
+  mode: 'plate' | 'vin' = 'plate',
+  customLogos: LogoReference[] = []
+): Promise<ScanResult> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = "Analyze the handwriting in this image and convert it to machine-readable text. Focus on accuracy and maintain original formatting if possible. Only return the transcribed text.";
-
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: [{ parts: [{ inlineData: { mimeType: 'image/jpeg', data: base64Image } }, { text: prompt }] }]
-    });
-    return response.text?.trim() || "";
-  } catch (err) {
-    console.error("Handwriting recognition failed", err);
-    return "";
-  }
-}
-
-export async function analyzeVehicleImage(base64Image: string, mode: 'plate' | 'vin' = 'plate'): Promise<ScanResult> {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const categories = Object.values(VehicleCategory).join(", ");
+  const trainingSamples = getNeuralSamples() as EnhancedNeuralSample[];
   
-  const prompt = "TACTICAL RECOGNITION ACTIVE. PERFORM MULTI-LAYER ANALYSIS:\n" +
-    "1. OCR (Identification): Extract alphanumeric strings from " + (mode === 'plate' ? 'LICENSE PLATES' : 'VIN LABELS') + ".\n" +
-    "2. LOGO RECOGNITION: Detect the manufacturer logo/emblem. Perform OCR on any text WITHIN the emblem.\n" +
-    "3. SHAPE/BODY STYLE: Categorize the shape (e.g., Sedan, SUV, Pickup Truck).\n" +
-    "4. WHEEL SIGNATURE: Identify wheel pattern (spoke count, color, finish, steel vs alloy) and tire condition.\n" +
-    "5. BODY MODIFICATIONS: Detect external modifications like roof racks, spoilers, tinted windows, bull bars, or specific damage patterns.\n" +
-    "6. MAKE/MODEL: Identify year, make, and model.\n" +
-    "7. COLOR: Natural color analysis.\n" +
-    "8. CATEGORY: Classify based on: " + categories + ".\n" +
-    "9. DOCUMENT SCAN: Check if any official documents (Driver's license, ID card, permit, insurance card) are visible in the frame. If found, identify the type and extract all readable text.\n" +
-    "10. CONFIDENCE: Provide a probability score for the overall recognition accuracy (0.0 to 1.0).\n\n" +
-    "Return clean JSON.";
+  const contentParts: any[] = [
+    { inlineData: { mimeType: 'image/jpeg', data: base64Image } }
+  ];
+
+  let customContext = "";
+  customContext += "\n\nOPERATIONAL TRUTH PROTOCOLS:\n";
+  customContext += "1. NHTSA vPIC: Primary for Year/Make/Model/Recalls. 10th VIN char is Year Code. 1-3 are WMI.\n";
+  customContext += "2. NMVTIS: Ground truth for title brands (Salvage, Junk, Flood) and odometer history.\n";
+  customContext += "3. NICB (USA) / CPIC (Canada): Master stolen vehicle indices for national verification.\n";
+
+  if (customLogos.length > 0) {
+    customContext += "\nOPERATOR-SPECIFIC EMBLEM REFS:\n";
+    customLogos.forEach((logo, index) => {
+      customContext += `- Ref [${index}]: Verified "${logo.label}" branding.\n`;
+      contentParts.push({ inlineData: { mimeType: 'image/jpeg', data: logo.base64 } });
+    });
+  }
+
+  const prompt = "OPERATIONAL NEURAL ENGINE ACTIVE. MULTIMODAL PATTERN ANALYSIS:\n" +
+    "1. OCR PROTOCOL: Extract license plates or VIN strings.\n" +
+    "2. IDENTIFICATION: Identify Year, Make, and precisely extract the Model Name (e.g., 'F-150', 'Camry', 'Model 3'). Identify Color and Category.\n" +
+    "3. LOGO: Detect manufacturer logos and text.\n\n" +
+    "Return JSON.";
+
+  contentParts.push({ text: prompt });
 
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
-    contents: [{ parts: [{ inlineData: { mimeType: 'image/jpeg', data: base64Image } }, { text: prompt }] }],
+    contents: { parts: contentParts },
     config: {
-      responseMimeType: 'application/json',
+      responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
         properties: {
@@ -126,89 +151,21 @@ export async function analyzeVehicleImage(base64Image: string, mode: 'plate' | '
           vin: { type: Type.STRING },
           year: { type: Type.STRING },
           make: { type: Type.STRING },
-          model: { type: Type.STRING },
+          model: { type: Type.STRING, description: "Precise vehicle model name as seen on the vehicle or inferred from visual features." },
+          trimLevel: { type: Type.STRING },
           brand: { type: Type.STRING },
           shape: { type: Type.STRING },
-          wheelSignature: { type: Type.STRING, description: "Detailed description of wheels and tires" },
-          bodyModifications: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List of detected body mods or distinct features" },
+          wheelSignature: { type: Type.STRING },
+          bodyModifications: { type: Type.ARRAY, items: { type: Type.STRING } },
           logoDetected: { type: Type.BOOLEAN },
           logoText: { type: Type.STRING },
+          logoConfidence: { type: Type.NUMBER },
           color: { type: Type.STRING },
           category: { type: Type.STRING },
           notes: { type: Type.STRING },
           confidence: { type: Type.NUMBER },
-          documents: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                type: { type: Type.STRING, description: "e.g., Driver's License, Insurance Card" },
-                extractedText: { type: Type.STRING },
-                confidence: { type: Type.NUMBER }
-              },
-              required: ["type", "extractedText", "confidence"]
-            }
-          }
-        },
-        required: ["make", "model", "category", "shape", "wheelSignature", "bodyModifications", "logoDetected", "confidence", "documents"]
-      }
-    }
-  });
-
-  const result = JSON.parse(response.text || '{}');
-  
-  return {
-    plate: result.plate || (mode === 'vin' ? 'N/A' : 'Unknown'),
-    vin: result.vin || (mode === 'plate' ? 'Not Scanned' : 'Unknown'),
-    year: result.year || 'Unknown',
-    make: result.make || 'Unknown',
-    model: result.model || 'Unknown',
-    brand: result.brand || result.make || 'Unknown',
-    shape: result.shape || 'Standard Body',
-    wheelSignature: result.wheelSignature || 'Generic Wheels',
-    bodyModifications: result.bodyModifications || [],
-    logoDetected: !!result.logoDetected,
-    logoText: result.logoText || '',
-    color: result.color || 'Unknown',
-    category: (result.category as VehicleCategory) || VehicleCategory.NORMAL,
-    notes: result.notes || 'Optical recognition complete.',
-    confidence: result.confidence || 0.5,
-    documents: result.documents || []
-  };
-}
-
-export async function analyzePersonImage(base64Image: string): Promise<PersonScanResult> {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  const prompt = "FACIAL RECOGNITION & BIOMETRIC UPLINK ACTIVE.\nExtract:\n" +
-    "1. FACIAL SIGNATURE: Detailed neural description of facial structure.\n" +
-    "2. IDENTITY: Name (if credentials visible).\n" +
-    "3. BIOMETRICS: Est. height, hair, eyes.\n" +
-    "4. INTEL: Subject intent and behavior.\n" +
-    "5. DOCUMENT SCAN: Identify any official ID cards or documents visible. Extract type and text.\n\n" +
-    "Assign Interaction Type: 'Sighting', 'Trespass', or 'Notification'. Return JSON.";
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
-    contents: [{ parts: [{ inlineData: { mimeType: 'image/jpeg', data: base64Image } }, { text: prompt }] }],
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          name: { type: Type.STRING },
-          biometrics: {
-            type: Type.OBJECT,
-            properties: {
-              height: { type: Type.STRING },
-              hair: { type: Type.STRING },
-              eyes: { type: Type.STRING },
-              marks: { type: Type.ARRAY, items: { type: Type.STRING } },
-              facialSignature: { type: Type.STRING }
-            }
-          },
-          notes: { type: Type.STRING },
-          suggestedInteraction: { type: Type.STRING },
+          historicalMatch: { type: Type.BOOLEAN },
+          operationalChecks: { type: Type.ARRAY, items: { type: Type.STRING } },
           documents: {
             type: Type.ARRAY,
             items: {
@@ -221,55 +178,164 @@ export async function analyzePersonImage(base64Image: string): Promise<PersonSca
               required: ["type", "extractedText", "confidence"]
             }
           }
-        }
+        },
+        required: ["make", "model", "category", "confidence", "documents"]
       }
     }
   });
 
   const result = JSON.parse(response.text || '{}');
+  
   return {
-    name: result.name || 'Unknown Subject',
-    ssnHint: '',
-    biometrics: {
-      height: result.biometrics?.height || 'Unknown',
-      hair: result.biometrics?.hair || 'Unknown',
-      eyes: result.biometrics?.eyes || 'Unknown',
-      marks: result.biometrics?.marks || [],
-      facialSignature: result.biometrics?.facialSignature || 'No clear neural signature extracted.'
-    },
-    notes: result.notes || 'Subject analyzed.',
-    suggestedInteraction: (result.suggestedInteraction as InteractionType) || InteractionType.SIGHTING,
-    documents: result.documents || []
+    plate: result.plate || (mode === 'vin' ? 'N/A' : 'Unknown'),
+    vin: result.vin || (mode === 'plate' ? 'Not Scanned' : 'Unknown'),
+    year: result.year || 'Unknown',
+    make: result.make || 'Unknown',
+    model: result.model || 'Unknown',
+    trimLevel: result.trimLevel || 'Base',
+    brand: result.brand || result.make || 'Unknown',
+    shape: result.shape || 'Unknown Body',
+    wheelSignature: result.wheelSignature || 'Generic Wheels',
+    bodyModifications: result.bodyModifications || [],
+    logoDetected: !!result.logoDetected,
+    logoText: result.logoText || '',
+    logoConfidence: result.logoConfidence || 0,
+    color: result.color || 'Unknown',
+    category: (result.category as VehicleCategory) || VehicleCategory.NORMAL,
+    notes: result.notes || '',
+    confidence: result.confidence || 0,
+    documents: result.documents || [],
+    historicalMatch: !!result.historicalMatch,
+    operationalChecks: result.operationalChecks || []
+  };
+}
+
+export async function getVehicleAppraisal(year: string, make: string, model: string): Promise<AppraisalResult> {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const prompt = `Perform a tactical market appraisal for a ${year} ${make} ${model} in average condition. Use Google Search to find current market values from sites like KBB, Edmunds, and car marketplaces. Return a single estimated value in USD and a confidence score between 0 and 1 based on data availability. Return JSON.`;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: prompt,
+    config: {
+      tools: [{ googleSearch: {} }],
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          value: { type: Type.NUMBER, description: "Estimated market value in USD" },
+          confidence: { type: Type.NUMBER, description: "Confidence score 0-1" },
+          reasoning: { type: Type.STRING, description: "Brief summary of appraisal data" }
+        },
+        required: ["value", "confidence", "reasoning"]
+      }
+    }
+  });
+
+  const res = JSON.parse(response.text || '{}');
+  const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
+    ?.map((chunk: any) => ({
+      title: chunk.web?.title || 'Market Source',
+      uri: chunk.web?.uri || ''
+    }))
+    .filter((s: any) => s.uri) || [];
+
+  return {
+    value: res.value || 0,
+    confidence: res.confidence || 0,
+    reasoning: res.reasoning || '',
+    sources
+  };
+}
+
+export async function analyzePersonImage(base64Image: string): Promise<PersonScanResult> {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: [
+      { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
+      { text: "Analyze this person for biometric identification. Return JSON." }
+    ],
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING },
+          biometrics: {
+            type: Type.OBJECT,
+            properties: {
+              height: { type: Type.STRING },
+              hair: { type: Type.STRING },
+              eyes: { type: Type.STRING },
+              distinguishingMarks: { type: Type.ARRAY, items: { type: Type.STRING } }
+            }
+          },
+          notes: { type: Type.STRING },
+          suggestedInteraction: { type: Type.STRING }
+        },
+        required: ["name", "biometrics", "notes", "suggestedInteraction"]
+      }
+    }
+  });
+
+  const res = JSON.parse(response.text || '{}');
+  return {
+    name: res.name || 'Unknown Subject',
+    biometrics: res.biometrics || {},
+    notes: res.notes || '',
+    suggestedInteraction: (res.suggestedInteraction as InteractionType) || InteractionType.SIGHTING,
+    documents: res.documents || []
   };
 }
 
 export async function searchIntelligence(query: string): Promise<IntelResult> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: 'gemini-3-flash-preview',
     contents: query,
-    config: { tools: [{ googleSearch: {} }] },
+    config: {
+      tools: [{ googleSearch: {} }]
+    }
   });
   const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
-    ?.filter(chunk => chunk.web)
-    ?.map(chunk => ({ title: chunk.web?.title || 'Source', uri: chunk.web?.uri || '' })) || [];
-  return { text: response.text || "No intelligence found.", sources };
+    ?.map((chunk: any) => ({
+      title: chunk.web?.title || 'Tactical Intel Link',
+      uri: chunk.web?.uri || ''
+    }))
+    .filter((s: any) => s.uri) || [];
+  return { text: response.text || '', sources };
 }
 
 export async function mapIntelligence(query: string, lat?: number, lng?: number): Promise<IntelResult> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: 'gemini-2.5-flash',
     contents: query,
     config: {
       tools: [{ googleMaps: {} }],
-      toolConfig: {
-        retrievalConfig: { latLng: lat && lng ? { latitude: lat, longitude: lng } : undefined }
-      }
-    },
+      toolConfig: (lat !== undefined && lng !== undefined) ? {
+        retrievalConfig: { latLng: { latitude: lat, longitude: lng } }
+      } : undefined
+    }
   });
   const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
-    ?.filter(chunk => chunk.maps)
-    ?.map(chunk => ({ title: chunk.maps?.title || "Location Result", uri: chunk.maps?.uri || '' })) || [];
-  return { text: response.text || "No geographic data found.", sources };
+    ?.map((chunk: any) => ({
+      title: chunk.maps?.title || 'Map Intel Location',
+      uri: chunk.maps?.uri || ''
+    }))
+    .filter((s: any) => s.uri) || [];
+  return { text: response.text || '', sources };
+}
+
+export async function recognizeHandwriting(base64Image: string): Promise<string> {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: [
+      { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
+      { text: "Transcribe the handwriting. Return only the text." }
+    ]
+  });
+  return response.text || '';
 }

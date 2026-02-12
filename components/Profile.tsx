@@ -1,19 +1,22 @@
 
 import React from 'react';
-import { User as UserIcon, LogOut, Shield, BadgeCheck, FileText, Settings, ChevronRight, Sun, Moon, Monitor } from 'lucide-react';
-import { User, ThemeMode } from '../types';
+import { User as UserIcon, LogOut, Shield, BadgeCheck, FileText, Settings, ChevronRight, Sun, Moon, Monitor, Cpu, Brain } from 'lucide-react';
+import { User, ThemeMode, AppView } from '../types';
 
 interface ProfileProps {
   user: User;
   onLogout: () => void;
   theme: ThemeMode;
   setTheme: (theme: ThemeMode) => void;
+  onNavigate: (view: AppView) => void;
 }
 
-const Profile: React.FC<ProfileProps> = ({ user, onLogout, theme, setTheme }) => {
+const Profile: React.FC<ProfileProps> = ({ user, onLogout, theme, setTheme, onNavigate }) => {
   const menuItems = [
+    { icon: Cpu, label: 'Neural Logo Lab', value: 'Learned Brands', action: () => onNavigate('logo-lab') },
+    { icon: Brain, label: 'Neural Training Core', value: 'Recognition Weights', action: () => onNavigate('neural-lab') },
     { icon: BadgeCheck, label: 'Certifications', value: 'Active' },
-    { icon: FileText, label: 'Operational History', value: '42 logs' },
+    { icon: FileText, label: 'Operational History', value: 'Logs Active' },
   ];
 
   const themeOptions = [
@@ -79,9 +82,13 @@ const Profile: React.FC<ProfileProps> = ({ user, onLogout, theme, setTheme }) =>
         </div>
 
         <div className="space-y-3">
-          <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Tactical Info</h3>
+          <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Tactical Customization</h3>
           {menuItems.map((item, idx) => (
-            <button key={idx} className="w-full bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-4 rounded-xl flex items-center justify-between group active:scale-[0.98] transition-all">
+            <button 
+              key={idx} 
+              onClick={item.action}
+              className="w-full bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-4 rounded-xl flex items-center justify-between group active:scale-[0.98] transition-all"
+            >
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-slate-50 dark:bg-slate-900 rounded-lg text-slate-400 group-hover:text-blue-500 transition-colors">
                   <item.icon size={18} />

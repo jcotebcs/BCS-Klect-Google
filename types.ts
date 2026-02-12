@@ -24,6 +24,12 @@ export enum InteractionType {
   NOTIFICATION = 'Notification'
 }
 
+export enum TrespassWarningType {
+  VERBAL = 'Verbal',
+  WRITTEN = 'Written',
+  NONE = 'None'
+}
+
 export type ThemeMode = 'light' | 'dark' | 'system';
 
 export interface User {
@@ -34,9 +40,34 @@ export interface User {
 }
 
 export interface DocumentInfo {
-  type: string; // e.g., "Driver's License", "Work Permit", "State ID"
+  type: string;
   extractedText: string;
   confidence: number;
+}
+
+export interface AssetPhoto {
+  url: string;
+  label: string;
+  timestamp: string;
+}
+
+export interface LogoReference {
+  id: string;
+  label: string;
+  base64: string;
+  timestamp: string;
+}
+
+export interface NeuralSample {
+  id: string;
+  thumbnail: string;
+  verifiedData: {
+    year: string;
+    make: string;
+    model: string;
+    shape: string;
+  };
+  timestamp: string;
 }
 
 export interface PersonRecord {
@@ -48,7 +79,7 @@ export interface PersonRecord {
     hair?: string;
     eyes?: string;
     distinguishingMarks?: string[];
-    facialSignature?: string; // Neural description of face
+    facialSignature?: string;
   };
   associatedPlates: string[];
   photos: string[];
@@ -70,10 +101,14 @@ export interface VehicleRecord {
   year: string;
   make: string;
   model: string;
+  trimLevel?: string;
+  marketValue?: number;
+  marketValueConfidence?: number;
+  plantCountry?: string;
   brand?: string;
-  shape?: string; // Body style
-  wheelSignature?: string; // e.g. "5-spoke alloy, black finish"
-  bodyModifications?: string[]; // e.g. ["Roof rack", "Tinted windows", "Rear spoiler"]
+  shape?: string;
+  wheelSignature?: string;
+  bodyModifications?: string[];
   logoDetected?: boolean;
   logoText?: string; 
   color: string;
@@ -86,9 +121,17 @@ export interface VehicleRecord {
     address: string;
   };
   notes?: string;
-  photos: string[];
+  photos: AssetPhoto[];
   recordings: string[];
   documents?: DocumentInfo[];
+  lastSighting?: string;
+  vinData?: Record<string, string>;
+  stolenCheckResult?: {
+    isStolen: boolean;
+    details: string;
+    timestamp: string;
+    sources: { title: string; uri: string }[];
+  };
 }
 
 export interface Interaction {
@@ -97,8 +140,10 @@ export interface Interaction {
   subjectId?: string;
   vehicleId?: string;
   timestamp: string;
-  location?: { lat: number; lng: number };
+  location?: { lat: number; lng: number; address?: string };
   notes: string;
+  operatorName: string;
+  warningType?: TrespassWarningType;
 }
 
-export type AppView = 'dashboard' | 'scanner' | 'person-scanner' | 'history' | 'people' | 'details' | 'person-details' | 'profile' | 'intel' | 'bulk-approval' | 'bulk-upload';
+export type AppView = 'dashboard' | 'scanner' | 'person-scanner' | 'history' | 'people' | 'details' | 'person-details' | 'profile' | 'intel' | 'bulk-approval' | 'bulk-upload' | 'logo-lab' | 'neural-lab' | 'new-asset';
