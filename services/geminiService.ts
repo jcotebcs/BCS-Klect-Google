@@ -2,8 +2,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { VehicleCategory, InteractionType, DocumentInfo, LogoReference, NeuralSample } from "../types";
 import { getNeuralSamples, EnhancedNeuralSample } from "./trainingService";
-import { NORTH_AMERICAN_ARCHIVES } from "./manufacturerData";
-import { OPERATIONAL_KNOWLEDGE_BUCKET } from "./knowledgeBucket";
 
 export interface ScanResult {
   plate: string;
@@ -54,8 +52,42 @@ export interface IntelResult {
   sources: { title: string; uri: string }[];
 }
 
-// REPAIR: Added timestamp to return type to satisfy VehicleRecord interface
-export async function checkStolenStatus(vin: string): Promise<{ isStolen: boolean, details: string, timestamp: string, sources: { title: string, uri: string }[] }> {
+export interface StolenCheckResult {
+  isStolen: boolean;
+  details: string;
+  timestamp: string;
+  sources: { title: string; uri: string }[];
+}
+
+// Helper to extract grounding chunks into standardized source objects
+function extractGroundingSources(response: any): { title: string; uri: string }[] {
+  const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+  const sources: { title: string; uri: string }[] = [];
+
+  chunks.forEach((chunk: any) => {
+    // Web Grounding
+    if (chunk.web?.uri) {
+      sources.push({
+        title: chunk.web.title || "Search Result",
+        uri: chunk.web.uri
+      });
+    }
+    // Maps Grounding
+    if (chunk.maps?.uri) {
+      sources.push({
+        title: chunk.maps.title || "Location Intel",
+        uri: chunk.maps.uri
+      });
+    }
+  });
+
+  return sources;
+}
+
+/**
+ * Perform a high-security tactical theft check using Gemini 3 Pro with Search Grounding and Thinking.
+ */
+export async function checkStolenStatus(vin: string): Promise<StolenCheckResult> {
   if (!vin || vin === 'Unknown' || vin === 'Not Scanned') {
     return { isStolen: false, details: "Invalid VIN for theft check", timestamp: new Date().toISOString(), sources: [] };
   }
@@ -64,7 +96,7 @@ export async function checkStolenStatus(vin: string): Promise<{ isStolen: boolea
   const prompt = `Perform a high-security tactical check on the VIN "${vin}". 
     Target NICB (nicb.org), CPIC (cpic-cipc.ca), and regional stolen vehicle databases. 
     Determine if this vehicle is currently reported as stolen, salvage, or total loss.
-    Return JSON format.`;
+    Return JSON format. Ensure you check for recent activity or recovery status.`;
 
   try {
     const response = await ai.models.generateContent({
@@ -72,6 +104,7 @@ export async function checkStolenStatus(vin: string): Promise<{ isStolen: boolea
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
+        thinkingConfig: { thinkingBudget: 32768 },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -85,17 +118,11 @@ export async function checkStolenStatus(vin: string): Promise<{ isStolen: boolea
     });
 
     const res = JSON.parse(response.text || '{}');
-    const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
-      ?.map((chunk: any) => ({
-        title: chunk.web?.title || 'Security Source',
-        uri: chunk.web?.uri || ''
-      }))
-      .filter((s: any) => s.uri) || [];
+    const sources = extractGroundingSources(response);
 
     return {
       isStolen: !!res.isStolen,
       details: res.details || "No record found.",
-      // REPAIR: Added real-time timestamp
       timestamp: new Date().toISOString(),
       sources
     };
@@ -111,29 +138,20 @@ export async function analyzeVehicleImage(
   customLogos: LogoReference[] = []
 ): Promise<ScanResult> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const trainingSamples = getNeuralSamples() as EnhancedNeuralSample[];
   
   const contentParts: any[] = [
     { inlineData: { mimeType: 'image/jpeg', data: base64Image } }
   ];
 
-  let customContext = "";
-  customContext += "\n\nOPERATIONAL TRUTH PROTOCOLS:\n";
-  customContext += "1. NHTSA vPIC: Primary for Year/Make/Model/Recalls. 10th VIN char is Year Code. 1-3 are WMI.\n";
-  customContext += "2. NMVTIS: Ground truth for title brands (Salvage, Junk, Flood) and odometer history.\n";
-  customContext += "3. NICB (USA) / CPIC (Canada): Master stolen vehicle indices for national verification.\n";
-
   if (customLogos.length > 0) {
-    customContext += "\nOPERATOR-SPECIFIC EMBLEM REFS:\n";
     customLogos.forEach((logo, index) => {
-      customContext += `- Ref [${index}]: Verified "${logo.label}" branding.\n`;
       contentParts.push({ inlineData: { mimeType: 'image/jpeg', data: logo.base64 } });
     });
   }
 
   const prompt = "OPERATIONAL NEURAL ENGINE ACTIVE. MULTIMODAL PATTERN ANALYSIS:\n" +
     "1. OCR PROTOCOL: Extract license plates or VIN strings.\n" +
-    "2. IDENTIFICATION: Identify Year, Make, and precisely extract the Model Name (e.g., 'F-150', 'Camry', 'Model 3'). Identify Color and Category.\n" +
+    "2. IDENTIFICATION: Identify Year, Make, and precisely extract the Model Name. Identify Color and Category.\n" +
     "3. LOGO: Detect manufacturer logos and text.\n\n" +
     "Return JSON.";
 
@@ -151,7 +169,7 @@ export async function analyzeVehicleImage(
           vin: { type: Type.STRING },
           year: { type: Type.STRING },
           make: { type: Type.STRING },
-          model: { type: Type.STRING, description: "Precise vehicle model name as seen on the vehicle or inferred from visual features." },
+          model: { type: Type.STRING },
           trimLevel: { type: Type.STRING },
           brand: { type: Type.STRING },
           shape: { type: Type.STRING },
@@ -212,7 +230,7 @@ export async function analyzeVehicleImage(
 
 export async function getVehicleAppraisal(year: string, make: string, model: string): Promise<AppraisalResult> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = `Perform a tactical market appraisal for a ${year} ${make} ${model} in average condition. Use Google Search to find current market values from sites like KBB, Edmunds, and car marketplaces. Return a single estimated value in USD and a confidence score between 0 and 1 based on data availability. Return JSON.`;
+  const prompt = `Perform a tactical market appraisal for a ${year} ${make} ${model} in average condition. Use Google Search to find current market values from sites like KBB, Edmunds, and car marketplaces. Return JSON.`;
 
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
@@ -233,12 +251,7 @@ export async function getVehicleAppraisal(year: string, make: string, model: str
   });
 
   const res = JSON.parse(response.text || '{}');
-  const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
-    ?.map((chunk: any) => ({
-      title: chunk.web?.title || 'Market Source',
-      uri: chunk.web?.uri || ''
-    }))
-    .filter((s: any) => s.uri) || [];
+  const sources = extractGroundingSources(response);
 
   return {
     value: res.value || 0,
@@ -251,12 +264,13 @@ export async function getVehicleAppraisal(year: string, make: string, model: str
 export async function analyzePersonImage(base64Image: string): Promise<PersonScanResult> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: 'gemini-3-pro-preview',
     contents: [
       { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
       { text: "Analyze this person for biometric identification. Return JSON." }
     ],
     config: {
+      thinkingConfig: { thinkingBudget: 32768 },
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
@@ -289,6 +303,30 @@ export async function analyzePersonImage(base64Image: string): Promise<PersonSca
   };
 }
 
+/**
+ * Performs a general visual analysis using Gemini 3 Pro with deep thinking.
+ */
+export async function generalVisualAnalysis(base64Image: string): Promise<IntelResult> {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-pro-preview',
+    contents: [
+      { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
+      { text: "Provide a comprehensive tactical analysis of this image. Identify any notable objects, threats, or signatures. Use search grounding for verified info if specific brands or locations are visible." }
+    ],
+    config: {
+      tools: [{ googleSearch: {} }],
+      thinkingConfig: { thinkingBudget: 32768 }
+    }
+  });
+  
+  const sources = extractGroundingSources(response);
+  return { text: response.text || '', sources };
+}
+
+/**
+ * Perform tactical search with Google Search Grounding.
+ */
 export async function searchIntelligence(query: string): Promise<IntelResult> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const response = await ai.models.generateContent({
@@ -298,33 +336,33 @@ export async function searchIntelligence(query: string): Promise<IntelResult> {
       tools: [{ googleSearch: {} }]
     }
   });
-  const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
-    ?.map((chunk: any) => ({
-      title: chunk.web?.title || 'Tactical Intel Link',
-      uri: chunk.web?.uri || ''
-    }))
-    .filter((s: any) => s.uri) || [];
+  
+  const sources = extractGroundingSources(response);
   return { text: response.text || '', sources };
 }
 
+/**
+ * Perform tactical mapping with Google Maps & Search Grounding.
+ */
 export async function mapIntelligence(query: string, lat?: number, lng?: number): Promise<IntelResult> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  // NOTE: Maps grounding is strictly for 2.5 series.
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: query,
     config: {
-      tools: [{ googleMaps: {} }],
+      // Maps grounding can be combined with Search grounding.
+      tools: [{ googleMaps: {} }, { googleSearch: {} }],
       toolConfig: (lat !== undefined && lng !== undefined) ? {
-        retrievalConfig: { latLng: { latitude: lat, longitude: lng } }
+        retrievalConfig: {
+          latLng: { latitude: lat, longitude: lng }
+        }
       } : undefined
     }
   });
-  const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
-    ?.map((chunk: any) => ({
-      title: chunk.maps?.title || 'Map Intel Location',
-      uri: chunk.maps?.uri || ''
-    }))
-    .filter((s: any) => s.uri) || [];
+
+  const sources = extractGroundingSources(response);
   return { text: response.text || '', sources };
 }
 

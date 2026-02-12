@@ -288,8 +288,8 @@ const App: React.FC = () => {
     switch (activeView) {
       case 'dashboard': return <Dashboard vehicles={vehicles} people={people} interactions={interactions} onQuickSearch={() => { setAutoOpenHistoryFilter(true); setActiveView('history'); }} onNavigate={setActiveView} />;
       case 'scanner': return <Scanner onScanComplete={handleScanComplete} onCancel={() => setActiveView('dashboard')} />;
-      case 'history': return <History records={vehicles} interactions={interactions} onSelect={r => { setSelectedVehicle(r); setActiveView('details'); }} initialFilterOpen={autoOpenHistoryFilter} />;
-      case 'details': return selectedVehicle && <VehicleDetails record={selectedVehicle} interactions={interactions} onBack={() => setActiveView('history')} onDelete={id => setVehicles(v => v.filter(x => x.id !== id))} />;
+      case 'history': return <History records={vehicles} interactions={interactions} onSelect={r => { setSelectedVehicle(r); setActiveView('details'); }} onAddAsset={() => setActiveView('new-asset')} initialFilterOpen={autoOpenHistoryFilter} />;
+      case 'details': return selectedVehicle && <VehicleDetails record={selectedVehicle} interactions={interactions} onBack={() => setActiveView('history')} onDelete={id => setVehicles(v => v.filter(x => x.id !== id))} onUpdate={r => { setVehicles(prev => prev.map(v => v.id === r.id ? r : v)); setSelectedVehicle(r); }} />;
       case 'profile': return <Profile user={currentUser!} onLogout={() => { setCurrentUser(null); localStorage.removeItem('bc_ops_session'); }} theme={theme} setTheme={setTheme} onNavigate={setActiveView} />;
       case 'intel': return <IntelHub />;
       case 'person-scanner': return <PersonScanner onScanComplete={p => { setPeople(prev => [p, ...prev]); setActiveView('people'); }} onCancel={() => setActiveView('dashboard')} />;
@@ -309,7 +309,7 @@ const App: React.FC = () => {
     return (
       <div className="fixed inset-0 z-[150] flex items-center justify-center p-6">
         <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={() => setWorkflow(null)} />
-        <div className="relative w-full max-w-sm bg-white dark:bg-slate-900 rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 duration-200">
+        <div className="relative w-full max-sm bg-white dark:bg-slate-900 rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 duration-200">
           {type === 'DUPLICATE' && (
             <div className="space-y-6 text-center">
               <div className="w-20 h-20 bg-amber-500/10 rounded-full flex items-center justify-center mx-auto text-amber-500">

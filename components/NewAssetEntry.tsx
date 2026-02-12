@@ -3,7 +3,7 @@ import React, { useState, useRef } from 'react';
 import { 
   Camera, X, Plus, Cloud, Image as ImageIcon, 
   Trash2, Loader2, Check, Zap, ArrowRight, ChevronRight, 
-  Target, PlusCircle, Info, FileText, CheckCircle, Smartphone, AlertTriangle, Cpu, Siren, Tag
+  Target, PlusCircle, Info, FileText, CheckCircle, Smartphone, AlertTriangle, Cpu, Siren, Tag, Edit3, Type
 } from 'lucide-react';
 import { analyzeVehicleImage, checkStolenStatus, ScanResult } from '../services/geminiService';
 import { getVinReasoning, VinReasoning } from '../services/nhtsaService';
@@ -36,6 +36,8 @@ const NewAssetEntry: React.FC<NewAssetEntryProps> = ({ onComplete, onCancel }) =
   const [targetPhotoIdx, setTargetPhotoIdx] = useState<number>(0);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [taggingIdx, setTaggingIdx] = useState<number | null>(null);
+  const [customTag, setCustomTag] = useState('');
+  const [activeCameraLabel, setActiveCameraLabel] = useState('General');
   
   const [mappingResult, setMappingResult] = useState<VerifiedScanResult | null>(null);
   
@@ -72,7 +74,7 @@ const NewAssetEntry: React.FC<NewAssetEntryProps> = ({ onComplete, onCancel }) =
     
     setPhotos(prev => [...prev, {
       url,
-      label: 'General',
+      label: activeCameraLabel,
       timestamp: new Date().toISOString()
     }]);
   };
@@ -142,10 +144,9 @@ const NewAssetEntry: React.FC<NewAssetEntryProps> = ({ onComplete, onCancel }) =
     if (!mappingResult) return;
     const finalizedPhotos = photos.map((p, i) => ({
       ...p,
-      label: i === targetPhotoIdx ? 'Identification Frame' : p.label
+      label: i === targetPhotoIdx ? (p.label.includes('Frame') ? p.label : `ID Frame: ${p.label}`) : p.label
     }));
     
-    // cast to ensure type safety with Partial<VehicleRecord>
     onComplete(mappingResult as Partial<VehicleRecord>, finalizedPhotos);
   };
 
@@ -171,6 +172,14 @@ const NewAssetEntry: React.FC<NewAssetEntryProps> = ({ onComplete, onCancel }) =
   const updatePhotoLabel = (idx: number, label: string) => {
     setPhotos(prev => prev.map((p, i) => i === idx ? { ...p, label } : p));
     setTaggingIdx(null);
+    setCustomTag('');
+  };
+
+  const getLabelColor = (label: string) => {
+    if (label === 'VIN') return 'text-blue-400 border-blue-500/30';
+    if (label === 'Trespass Sign') return 'text-red-400 border-red-500/30';
+    if (label === 'Context') return 'text-emerald-400 border-emerald-500/30';
+    return 'text-slate-400 border-slate-700';
   };
 
   return (
@@ -217,7 +226,7 @@ const NewAssetEntry: React.FC<NewAssetEntryProps> = ({ onComplete, onCancel }) =
                   <div className="absolute bottom-3 left-3 right-3 flex flex-col gap-1.5">
                     <button 
                       onClick={() => setTaggingIdx(idx)}
-                      className="w-full py-2 bg-black/60 backdrop-blur-md rounded-xl text-[8px] font-black text-white uppercase border border-white/10 flex items-center justify-center gap-1.5 shadow-2xl active:scale-95 transition-all"
+                      className={`w-full py-2 bg-black/60 backdrop-blur-md rounded-xl text-[8px] font-black uppercase border flex items-center justify-center gap-1.5 shadow-2xl active:scale-95 transition-all ${getLabelColor(ph.label)}`}
                     >
                       <Tag size={10} className="text-blue-500" /> {ph.label || 'Assign Tag'}
                     </button>
@@ -354,6 +363,27 @@ const NewAssetEntry: React.FC<NewAssetEntryProps> = ({ onComplete, onCancel }) =
               </div>
               <button onClick={() => setTaggingIdx(null)} className="p-2 bg-slate-800 rounded-full text-slate-500 active:scale-95"><X size={20} /></button>
             </div>
+
+            <div className="space-y-2">
+               <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest px-1">Custom Intel Tag</label>
+               <div className="relative">
+                 <Type size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-600" />
+                 <input 
+                  type="text" 
+                  value={customTag}
+                  onChange={(e) => setCustomTag(e.target.value)}
+                  placeholder="Enter custom identifier..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl py-4 pl-12 pr-16 text-xs font-bold text-white outline-none focus:border-blue-500 transition-all uppercase tracking-widest"
+                 />
+                 <button 
+                  onClick={() => customTag.trim() && updatePhotoLabel(taggingIdx, customTag.trim())}
+                  disabled={!customTag.trim()}
+                  className="absolute right-2 top-2 bottom-2 px-3 bg-blue-600 text-white rounded-xl active:scale-95 disabled:opacity-50"
+                 >
+                   <Check size={16} />
+                 </button>
+               </div>
+            </div>
             
             <div className="grid grid-cols-3 gap-2">
               {PHOTO_LABELS.map(label => (
@@ -399,21 +429,50 @@ const NewAssetEntry: React.FC<NewAssetEntryProps> = ({ onComplete, onCancel }) =
       {isCapturing && (
         <div className="fixed inset-0 z-[120] bg-black flex flex-col animate-in fade-in zoom-in-95">
           <video ref={videoRef} autoPlay playsInline className="flex-1 object-cover" />
-          <div className="absolute top-10 left-6 right-6 flex items-center justify-between">
+          
+          <div className="absolute top-10 left-6 right-6 flex items-center justify-between z-30">
              <div className="flex flex-col">
                <h3 className="text-white font-black text-[11px] uppercase tracking-widest flex items-center gap-2"><Smartphone size={14} className="text-blue-500" /> Lens Interface Active</h3>
                <p className="text-blue-400/60 font-mono text-[8px] uppercase tracking-[0.2em] mt-1">Collecting Field Intel</p>
              </div>
              <button onClick={stopCamera} className="p-3 bg-slate-900/50 backdrop-blur rounded-full text-white"><X size={20} /></button>
           </div>
-          <div className="p-8 bg-slate-950 flex flex-col gap-8 items-center px-12 pb-safe">
+
+          {/* Quick Label Protocol Selector */}
+          <div className="absolute top-24 left-0 right-0 z-30 px-6">
+             <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-4">
+                {PHOTO_LABELS.map(label => (
+                  <button
+                    key={label}
+                    onClick={() => setActiveCameraLabel(label)}
+                    className={`px-4 py-2 rounded-full text-[8px] font-black uppercase tracking-[0.2em] whitespace-nowrap transition-all border ${
+                      activeCameraLabel === label 
+                        ? 'bg-blue-600 border-blue-500 text-white shadow-lg' 
+                        : 'bg-black/40 backdrop-blur-md border-white/10 text-slate-400'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+             </div>
+          </div>
+
+          <div className="p-8 bg-slate-950 flex flex-col gap-8 items-center px-12 pb-safe z-30">
             <div className="flex items-center gap-3 overflow-x-auto no-scrollbar w-full pb-2">
                {photos.slice(-5).map((p, i) => (
-                 <div key={i} className="w-14 h-14 rounded-xl overflow-hidden border border-white/20 flex-shrink-0"><img src={p.url} className="w-full h-full object-cover" /></div>
+                 <div key={i} className="w-14 h-14 rounded-xl overflow-hidden border border-white/20 flex-shrink-0 relative">
+                   <img src={p.url} className="w-full h-full object-cover" />
+                   <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                     <span className="text-[6px] font-black text-white uppercase text-center leading-none px-1">{p.label}</span>
+                   </div>
+                 </div>
                ))}
             </div>
             <div className="flex justify-between items-center w-full">
-              <div className="w-14 h-14" />
+              <div className="w-14 h-14 flex flex-col items-center justify-center opacity-40">
+                 <Tag size={18} className="text-slate-500" />
+                 <span className="text-[7px] font-black uppercase text-slate-500 mt-1">Tag: {activeCameraLabel}</span>
+              </div>
               <button onClick={capturePhoto} className="w-24 h-24 rounded-full border-4 border-slate-800 p-1 bg-slate-900 active:scale-95"><div className="w-full h-full rounded-full bg-white flex items-center justify-center shadow-inner"><div className="w-12 h-12 rounded-full border-2 border-slate-200" /></div></button>
               <button onClick={stopCamera} className="w-14 h-14 bg-emerald-600 text-white rounded-2xl flex items-center justify-center shadow-lg active:scale-90"><Check size={28} strokeWidth={3} /></button>
             </div>

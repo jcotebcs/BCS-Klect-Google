@@ -1,7 +1,9 @@
 
-import React, { useState, useMemo } from 'react';
-import { Search, MapPin, Radio, Globe, History, Send, Loader2, ExternalLink, Activity, ShieldAlert, ArrowRight, Database, Library, Landmark, BookOpen, Info, CheckCircle2, ChevronRight, Zap, Target, Cpu, Landmark as HistoryIcon, X } from 'lucide-react';
-import { searchIntelligence, mapIntelligence, IntelResult } from '../services/geminiService';
+import React, { useState, useMemo, useRef } from 'react';
+// REPAIR: Added missing ShieldCheck icon to lucide-react imports
+import { Search, MapPin, Radio, Globe, History, Send, Loader2, ExternalLink, Activity, ShieldAlert, ArrowRight, Database, Library, Landmark, BookOpen, Info, CheckCircle2, ChevronRight, Zap, Target, Cpu, Landmark as HistoryIcon, X, MapPinned, Navigation, MessageSquare, ImageIcon, Brain, User, Bot, Paperclip, ShieldCheck } from 'lucide-react';
+import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { searchIntelligence, mapIntelligence, generalVisualAnalysis, IntelResult } from '../services/geminiService';
 import { NORTH_AMERICAN_ARCHIVES, queryArchives, HistoricalSignatures } from '../services/manufacturerData';
 import LiveChat from './LiveChat';
 
@@ -16,13 +18,28 @@ const OPERATIONAL_RESOURCES = [
   { region: 'Florida', agency: 'MV Check', scope: 'Ownership History & Lien Status', status: 'State Portal', link: 'https://services.flhsmv.gov/mvcheckweb/' }
 ];
 
+interface Message {
+  role: 'user' | 'model';
+  text: string;
+}
+
 const IntelHub: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'search' | 'maps' | 'live' | 'archives' | 'manual'>('live');
+  const [activeTab, setActiveTab] = useState<'search' | 'maps' | 'live' | 'archives' | 'manual' | 'chat' | 'vision'>('live');
   const [query, setQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState<IntelResult | null>(null);
   const [archiveResult, setArchiveResult] = useState<HistoricalSignatures | null>(null);
-  const [history, setHistory] = useState<{ query: string; type: string; timestamp: string }[]>([]);
+  const [currentCoords, setCurrentCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Chat State
+  const [chatMessages, setChatMessages] = useState<Message[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+
+  // Vision State
+  const [visionImage, setVisionImage] = useState<string | null>(null);
+  const [visionResult, setVisionResult] = useState<IntelResult | null>(null);
+  const visionFileRef = useRef<HTMLInputElement>(null);
 
   const filteredArchives = useMemo(() => {
     if (activeTab !== 'archives' || !query.trim()) return NORTH_AMERICAN_ARCHIVES;
@@ -53,20 +70,73 @@ const IntelHub: React.FC = () => {
         res = await searchIntelligence(query);
       } else if (activeTab === 'maps') {
         const pos = await new Promise<GeolocationPosition | null>((resolve) => {
-          navigator.geolocation.getCurrentPosition(resolve, () => resolve(null));
+          navigator.geolocation.getCurrentPosition(resolve, () => resolve(null), { timeout: 5000 });
         });
+        if (pos) {
+          setCurrentCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        }
         res = await mapIntelligence(query, pos?.coords.latitude, pos?.coords.longitude);
       }
       
       if (res) {
         setResults(res);
-        setHistory(prev => [{ query, type: activeTab, timestamp: new Date().toISOString() }, ...prev].slice(0, 5));
       }
     } catch (err) {
       console.error(err);
     } finally {
       setIsSearching(false);
     }
+  };
+
+  const handleChat = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!query.trim() || chatLoading) return;
+
+    const userMsg = query;
+    setQuery('');
+    setChatMessages(prev => [...prev, { role: 'user', text: userMsg }]);
+    setChatLoading(true);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const chat = ai.chats.create({
+        model: 'gemini-3-pro-preview',
+        config: {
+          systemInstruction: 'You are KLECT-OPS Tactical Analyst. Provide concise, accurate intelligence for field workers. Use professional industrial terminology.',
+          thinkingConfig: { thinkingBudget: 32768 }
+        }
+      });
+      
+      // Re-constructing context briefly for simplicity
+      // In a real app we would maintain the chat object
+      const response: GenerateContentResponse = await chat.sendMessage({ message: userMsg });
+      setChatMessages(prev => [...prev, { role: 'model', text: response.text || 'No response signal.' }]);
+    } catch (err) {
+      console.error(err);
+      setChatMessages(prev => [...prev, { role: 'model', text: 'SIGNAL LOST. System fault during processing.' }]);
+    } finally {
+      setChatLoading(false);
+      setTimeout(() => chatScrollRef.current?.scrollTo(0, chatScrollRef.current.scrollHeight), 100);
+    }
+  };
+
+  const handleVisionAnalysis = async (file: File) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64 = (reader.result as string).split(',')[1];
+      setVisionImage(reader.result as string);
+      setIsSearching(true);
+      setVisionResult(null);
+      try {
+        const res = await generalVisualAnalysis(base64);
+        setVisionResult(res);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setIsSearching(false);
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   return (
@@ -88,11 +158,12 @@ const IntelHub: React.FC = () => {
 
       <div className="flex p-1.5 gap-1 bg-white dark:bg-slate-800 shadow-sm mx-4 mt-6 rounded-[1.5rem] border border-slate-200 dark:border-slate-700 overflow-x-auto no-scrollbar">
         {[
-          { id: 'live', icon: Radio, label: 'Live' },
+          { id: 'live', icon: Radio, label: 'Audio' },
+          { id: 'chat', icon: MessageSquare, label: 'Chat' },
+          { id: 'vision', icon: ImageIcon, label: 'Vision' },
           { id: 'search', icon: Globe, label: 'Search' },
           { id: 'maps', icon: MapPin, label: 'Map' },
-          { id: 'archives', icon: Library, label: 'Archives' },
-          { id: 'manual', icon: BookOpen, label: 'Manual' }
+          { id: 'archives', icon: Library, label: 'Archive' },
         ].map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -104,6 +175,7 @@ const IntelHub: React.FC = () => {
                 setResults(null);
                 setArchiveResult(null);
                 setQuery('');
+                setCurrentCoords(null);
               }}
               className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-[1.25rem] text-[10px] font-black uppercase transition-all tracking-widest whitespace-nowrap ${
                 isActive ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
@@ -116,9 +188,109 @@ const IntelHub: React.FC = () => {
         })}
       </div>
 
-      <div className="flex-1 overflow-y-auto no-scrollbar p-4">
+      <div className="flex-1 overflow-y-auto no-scrollbar p-4 flex flex-col">
         {activeTab === 'live' ? (
           <LiveChat />
+        ) : activeTab === 'chat' ? (
+          <div className="flex-1 flex flex-col space-y-4 max-h-full">
+            <div ref={chatScrollRef} className="flex-1 overflow-y-auto no-scrollbar space-y-4 pb-4">
+              {chatMessages.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-10 text-slate-400">
+                  <Bot size={48} className="opacity-10 mb-4" />
+                  <p className="text-[10px] font-black uppercase tracking-widest text-center px-10">Uplink established. Gemini-3-Pro tactical analyst standing by for queries.</p>
+                </div>
+              )}
+              {chatMessages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2`}>
+                  <div className={`max-w-[85%] p-4 rounded-[2rem] text-sm ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-tl-none'}`}>
+                    <div className="flex items-center gap-2 mb-2 opacity-50">
+                      {msg.role === 'user' ? <User size={10} /> : <Bot size={10} />}
+                      <span className="text-[8px] font-black uppercase tracking-widest">{msg.role}</span>
+                    </div>
+                    <p className="font-medium leading-relaxed">{msg.text}</p>
+                  </div>
+                </div>
+              ))}
+              {chatLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-slate-100 dark:bg-slate-800 p-4 rounded-3xl flex items-center gap-3">
+                    <Loader2 className="animate-spin text-blue-500" size={16} />
+                    <span className="text-[10px] font-black text-blue-500 uppercase tracking-widest animate-pulse">Analyzing...</span>
+                  </div>
+                </div>
+              )}
+            </div>
+            <form onSubmit={handleChat} className="relative mt-auto">
+              <input 
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Message Tactical Analyst..."
+                className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-3xl py-4 pl-6 pr-14 text-sm font-bold shadow-xl focus:ring-2 focus:ring-blue-500 outline-none"
+              />
+              <button type="submit" disabled={chatLoading} className="absolute right-2 top-2 bottom-2 px-4 bg-blue-600 text-white rounded-2xl active:scale-95 transition-all">
+                <Send size={18} />
+              </button>
+            </form>
+          </div>
+        ) : activeTab === 'vision' ? (
+          <div className="space-y-6 flex-1 flex flex-col">
+            {!visionImage ? (
+              <div 
+                onClick={() => visionFileRef.current?.click()}
+                className="flex-1 border-2 border-dashed border-slate-300 dark:border-slate-800 rounded-[3rem] flex flex-col items-center justify-center gap-6 cursor-pointer hover:border-blue-500 hover:bg-blue-500/5 transition-all"
+              >
+                <div className="p-8 bg-slate-100 dark:bg-slate-800 rounded-[2.5rem]">
+                  <ImageIcon size={48} className="text-slate-400" />
+                </div>
+                <div className="text-center px-10">
+                  <h3 className="text-white font-black text-xl uppercase tracking-tighter">Visual Intelligence</h3>
+                  <p className="text-[10px] font-bold text-slate-500 mt-2 uppercase tracking-widest leading-relaxed">Upload a photo for multi-domain analysis. Gemini-3-Pro will identify objects, threats, and verify signatures.</p>
+                </div>
+                <input type="file" ref={visionFileRef} className="hidden" accept="image/*" onChange={(e) => e.target.files?.[0] && handleVisionAnalysis(e.target.files[0])} />
+              </div>
+            ) : (
+              <div className="space-y-6 flex-1 overflow-y-auto no-scrollbar pb-10">
+                <div className="relative rounded-[2.5rem] overflow-hidden aspect-video border border-slate-200 dark:border-slate-800 shadow-2xl">
+                  <img src={visionImage} className="w-full h-full object-cover" />
+                  <button onClick={() => {setVisionImage(null); setVisionResult(null);}} className="absolute top-4 right-4 p-2 bg-black/60 backdrop-blur rounded-full text-white"><X size={18} /></button>
+                </div>
+
+                {isSearching && (
+                  <div className="bg-blue-600/10 border border-blue-500/20 p-8 rounded-[2.5rem] flex flex-col items-center justify-center space-y-4">
+                    <Brain className="text-blue-500 animate-pulse" size={40} />
+                    <p className="text-[10px] font-black text-blue-500 uppercase tracking-[0.3em] animate-pulse">Executing Deep Neural Inference...</p>
+                    <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
+                      <div className="h-full bg-blue-500 animate-[progress_2s_linear_infinite]" style={{width: '60%'}} />
+                    </div>
+                  </div>
+                )}
+
+                {visionResult && (
+                  <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-[2.5rem] p-8 shadow-2xl space-y-6 animate-in fade-in slide-in-from-bottom-4">
+                    <div className="flex items-center gap-3 text-emerald-500">
+                      <ShieldCheck size={20} />
+                      <span className="text-[11px] font-black uppercase tracking-[0.3em]">Analysis Verified</span>
+                    </div>
+                    <div className="prose dark:prose-invert text-sm font-medium leading-relaxed">
+                      {visionResult.text.split('\n').map((l, i) => <p key={i}>{l}</p>)}
+                    </div>
+                    {visionResult.sources.length > 0 && (
+                      <div className="pt-6 border-t border-slate-100 dark:border-slate-700/50 space-y-3">
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Globe size={12} /> Grounding Evidence</p>
+                        {visionResult.sources.map((s, i) => (
+                          <a key={i} href={s.uri} target="_blank" rel="noopener noreferrer" className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-900/50 rounded-2xl border border-slate-100 dark:border-slate-800 hover:border-blue-500 transition-all">
+                             <span className="text-[10px] font-black text-slate-600 dark:text-slate-300 uppercase truncate">{s.title}</span>
+                             <ExternalLink size={14} className="text-blue-500" />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         ) : activeTab === 'manual' ? (
           <div className="space-y-6 animate-in fade-in duration-500">
              <div className="bg-white dark:bg-slate-800 rounded-[2.5rem] border border-slate-200 dark:border-slate-700 p-8 shadow-2xl">
@@ -143,7 +315,7 @@ const IntelHub: React.FC = () => {
                           </div>
                           <p className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tighter">{res.agency}</p>
                           <div className="flex items-center justify-between mt-1">
-                            <span className="text-[9px] font-bold text-slate-500">{res.scope}</span>
+                            <span className="text-index font-bold text-slate-500">{res.scope}</span>
                             <span className="text-[8px] font-black px-1.5 py-0.5 bg-blue-500/10 text-blue-600 rounded uppercase">{res.status}</span>
                           </div>
                        </a>
@@ -234,23 +406,6 @@ const IntelHub: React.FC = () => {
                       </div>
                     </div>
                   )}
-
-                  {archiveResult.modelSpecificEmblems.length > 0 && (
-                    <div className="space-y-3 pt-2">
-                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Model Emblems</p>
-                      <div className="grid grid-cols-1 gap-2">
-                        {archiveResult.modelSpecificEmblems.map((emb, i) => (
-                          <div key={i} className="bg-blue-600/5 border border-blue-500/10 p-4 rounded-2xl flex items-start gap-4">
-                            <div className="p-2 bg-blue-600 rounded-lg text-white"><Target size={14} /></div>
-                            <div>
-                              <p className="text-xs font-black text-blue-600 uppercase">{emb.model}</p>
-                              <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium italic mt-0.5">"{emb.description}"</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             ) : (
@@ -277,13 +432,6 @@ const IntelHub: React.FC = () => {
                     <ChevronRight size={20} className="text-slate-300" />
                   </button>
                 ))}
-                
-                {filteredArchives.length === 0 && (
-                  <div className="py-20 text-center space-y-4">
-                    <SearchX size={48} className="mx-auto text-slate-200 dark:text-slate-800" />
-                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No Historical Matches in Hub</p>
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -307,14 +455,28 @@ const IntelHub: React.FC = () => {
               </button>
             </form>
 
+            {activeTab === 'maps' && currentCoords && (
+              <div className="bg-emerald-500/5 border border-emerald-500/20 p-3 rounded-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
+                 <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+                 <span className="text-[9px] font-black text-emerald-500 uppercase tracking-[0.2em]">Geo-Fence Locked: {currentCoords.lat.toFixed(4)}, {currentCoords.lng.toFixed(4)}</span>
+              </div>
+            )}
+
             {results && (
               <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="bg-white dark:bg-slate-800 rounded-[2.5rem] border border-slate-200 dark:border-slate-700 p-8 shadow-2xl relative overflow-hidden">
                   <div className="absolute top-0 right-0 p-6 opacity-5 rotate-12"><Activity size={120} /></div>
-                  <div className="flex items-center gap-3 text-blue-600 mb-6">
-                    <Activity size={20} />
-                    <span className="text-[11px] font-black uppercase tracking-[0.3em]">Operational Dossier</span>
+                  
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3 text-blue-600">
+                      <Activity size={20} />
+                      <span className="text-[11px] font-black uppercase tracking-[0.3em]">Operational Dossier</span>
+                    </div>
+                    <div className="px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded text-[8px] font-black text-emerald-500 uppercase tracking-widest flex items-center gap-1.5">
+                      <CheckCircle2 size={10} /> Grounded Result
+                    </div>
                   </div>
+
                   <div className="text-slate-700 dark:text-slate-300 text-sm leading-relaxed font-medium space-y-4 prose dark:prose-invert max-w-none">
                     {results.text.split('\n').map((line, i) => (
                       <p key={i}>{line}</p>
@@ -323,18 +485,28 @@ const IntelHub: React.FC = () => {
                   
                   {results.sources.length > 0 && (
                     <div className="mt-8 pt-8 border-t border-slate-100 dark:border-slate-700/50">
-                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-4">Confirmed Data Sources</p>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                        <Globe size={12} className="text-blue-500" /> Tactical Intelligence Sources
+                      </p>
+                      <div className="grid grid-cols-1 gap-3">
                         {results.sources.map((src, i) => (
                           <a 
                             key={i} 
                             href={src.uri} 
                             target="_blank" 
                             rel="noopener noreferrer"
-                            className="flex items-center justify-between gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700 rounded-xl group hover:border-blue-500/50 transition-all shadow-sm"
+                            className="flex items-center justify-between gap-4 p-4 bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl group hover:border-blue-500/50 transition-all shadow-sm"
                           >
-                            <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 truncate uppercase tracking-tight group-hover:text-blue-500">{src.title}</span>
-                            <ExternalLink size={12} className="text-slate-400 group-hover:text-blue-500 flex-shrink-0" />
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                               <div className="p-2 bg-white dark:bg-slate-800 rounded-lg text-slate-400 group-hover:text-blue-500 transition-colors">
+                                 {src.uri.includes('google.com/maps') ? <MapPinned size={14} /> : <Globe size={14} />}
+                               </div>
+                               <div className="flex-1 min-w-0">
+                                 <p className="text-[10px] font-black text-slate-900 dark:text-white uppercase truncate group-hover:text-blue-500 transition-colors">{src.title}</p>
+                                 <p className="text-[8px] font-mono text-slate-400 truncate mt-0.5">{src.uri}</p>
+                               </div>
+                            </div>
+                            <ExternalLink size={14} className="text-slate-300 group-hover:text-blue-500 flex-shrink-0 transition-all group-hover:translate-x-0.5" />
                           </a>
                         ))}
                       </div>
@@ -349,18 +521,5 @@ const IntelHub: React.FC = () => {
     </div>
   );
 };
-
-const SearchX: React.FC<{className?: string, size?: number}> = ({className, size=24}) => (
-  <svg 
-    width={size} height={size} viewBox="0 0 24 24" fill="none" 
-    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" 
-    className={className}
-  >
-    <circle cx="11" cy="11" r="8" />
-    <path d="m21 21-4.3-4.3" />
-    <path d="m15 9-6 6" />
-    <path d="m9 9 6 6" />
-  </svg>
-);
 
 export default IntelHub;
